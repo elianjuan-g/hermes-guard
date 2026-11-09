@@ -1,26 +1,99 @@
+<div align="center">
+
+![Hermes Guard banner](docs/assets/hermes-guard-banner.svg)
+
 # Hermes Guard
 
-> A defensive security plugin for Hermes Agent — it scans every inbound message before the model sees it, and blocks hidden prompt-injection attempts at the gate.
+[Repository](https://github.com/elianjuan-g/hermes-guard) · [Catalog PR #151899](https://github.com/NousResearch/hermes-agent/pull/151899)
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Hermes](https://img.shields.io/badge/Hermes-%3E%3D0.21.5-blue)](https://github.com/NousResearch/hermes-agent)
+[![Docs](https://img.shields.io/badge/docs-README-blue?style=flat)](https://github.com/elianjuan-g/hermes-guard#readme)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green?style=flat)](LICENSE)
+![Version](https://img.shields.io/badge/version-v1.1.1-e8b64c?style=flat)
+![Tests](https://img.shields.io/badge/tests-152%2F152-brightgreen?style=flat)
+![Hermes](https://img.shields.io/badge/Hermes-%3E%3D0.21.5-orange?style=flat)
+![Local](https://img.shields.io/badge/local-100%25-blue?style=flat)
 
-Repository: https://github.com/elianjuan-g/hermes-guard
+</div>
 
-Version: **1.1.1**
+**Hermes Guard is a fail-closed prompt-injection guard for Hermes Agent: before any inbound message reaches the model, a `pre_llm_call` hook scans it locally across four layers — invisible characters, hidden instructions, special tokens, and Base64 deep-inspection — and a `pre_tool_call` hook guards risky tool calls. Held messages go to a local quarantine log for human review. Nothing leaves the machine, no model call is spent on a blocked turn, and no network call is ever made.**
 
-## What it does
+> **Scope — what this plugin is and is not**
+>
+> Hermes Guard is a deterministic, pattern-based guardrail. It catches
+> known prompt-injection shapes — 24 canonical vectors in the simulation
+> arena. It is **not** standalone security, **not** a model, and **not** a
+> guarantee: novel obfuscation that matches no pattern will pass. It never
+> judges a threat with a model call, and it never sends data anywhere.
 
-Hermes Guard sits between the user and the model. Before any inbound message reaches the language model, a `pre_llm_call` hook scans it locally for smuggled instructions:
+## Features
 
-- **Unicode smuggling** — zero-width characters, homoglyphs, and bidirectional override controls used to hide text from humans while the model can still read it.
-- **Hidden instructions** — directives embedded in a message that try to make the model act against the user's intent.
-- **Common jailbreak patterns** — known phrasings used to override system instructions.
-- **Obfuscated Base64** — a Base64 blob that decodes to a hidden instruction, a special token, or an RCE pattern. Base64 that decodes to ordinary text (English, Indonesian, JSON config) is explicitly NOT flagged.
+| | |
+|---|---|
+| **24 canonical vectors** | 21 message vectors (A01–A14 attacks, S01–S07 near-misses) + 3 tool-argument vectors (A15, A16, S08), plus 4 extra tool-arg checks (T01–T04). Arena: **21/21 message + 7/7 tool-arg**. See [Simulation arena](#simulation-arena) and [`tests.md`](tests.md). |
+| **Four layers (L1–L4)** | Invisible characters, hidden-instruction phrasing, special tokens, and Base64 deep-inspection. Each layer is a separate sub-scan with its own degraded tracking. See [The four layers](#the-four-layers-l1l4). |
+| **Three tiers** | **BLOCK** (high-confidence attack), **QUARANTINE** (suspicious, held for human review), **FLAG** (low suspicion, passes with a warning). A blocked or quarantined turn never reaches the model. |
+| **Fail-closed by default** | A detector exception blocks the turn (`fail_closed_on_error: true`) and records the degraded layer. Set it to `false` only if you accept fail-open behaviour. |
+| **Posture Score** | One number, 0–100, from live telemetry only: base 100 (35 + 25 + 20 + 10 + 10) minus pending, degraded, and false-positive penalties. Correct blocks **never** reduce the score. A fresh install scores 100. See [Posture Score](#posture-score). |
+| **Simulation arena** | The 24 canonical vectors run in memory against the same detection path, without touching live telemetry or the quarantine DB. Results are shown separately from the live posture. |
+| **Hash-chained ledger** | Every guard decision is appended to a local SHA-256 chain, so tampering with the audit trail is detectable. The ledger-verified component of the Posture Score is computed live from the stored chain. |
+| **Predator Pattern Store** | When a held phrase is released by a human, the pattern is suppressed — the same phrase **alone** no longer quarantines. Suppression is narrow: the phrase combined with any other trigger still quarantines. |
+| **Session taint + race guard** | A session that hits FLAG/QUARANTINE is tainted for 60 minutes and gets stricter tool-call scrutiny. The identical tool call repeated inside 10 seconds is blocked as a retry-storm/replay. |
+| **Secret redaction** | API keys, tokens, and private-key blocks are masked to `[REDACTED-SECRET]` before anything is persisted (quarantine previews, full text, ledger entries). |
+| **Forensic X-Ray HUD** | Live posture, L1–L4 matrix, real-only telemetry, latest intercept, and commands — as a standalone page. See a fresh-install render: [`docs/guard-hud-sample.html`](docs/guard-hud-sample.html). |
+| **100% local** | Python standard library + SQLite only. No network calls, no model calls for detection, no credentials read, no telemetry out, no self-updater, no core overrides. |
 
-A second hook, `pre_tool_call`, guards risky tool calls. It blocks on: a call-ID race (the identical call repeated inside the race window), RCE/subshell patterns (including a bare `rm -rf`), sensitive credential paths (`~/.ssh/id_*`, `.env`, `/etc/shadow`, `credentials.json`), decoded hidden Unicode payloads in arguments, and — only in a tainted session — hidden-instruction phrasing. Ordinary tool calls pass through untouched.
+## Contents
 
-Nothing about this plugin requires the model to judge the threat. Detection is deterministic, local, and runs before any model call happens.
+- [Quick Start](#quick-start)
+- [How it works](#how-it-works)
+- [The four layers (L1–L4)](#the-four-layers-l1l4)
+- [The three tiers](#the-three-tiers)
+- [Posture Score](#posture-score)
+- [Predator Pattern Store](#predator-pattern-store)
+- [Simulation arena](#simulation-arena)
+- [The guard_review tool](#the-guard_review-tool)
+- [CLI](#cli)
+- [Configuration](#configuration-pluginyaml-config_schema)
+- [Testing](#testing)
+- [Disclosure](#disclosure)
+- [Known issues](#known-issues)
+- [Requirements](#requirements)
+- [Contributing](#contributing)
+- [License](#license)
+
+## Quick Start
+
+```bash
+hermes plugins install elianjuan-g/hermes-guard
+hermes plugins enable hermes-guard
+```
+
+Verify the install (verified live on Hermes 0.21.5 in Phase 3):
+
+```bash
+hermes plugins validate ~/.hermes/plugins/hermes-guard   # 13/13 checks
+hermes plugins doctor hermes-guard                          # OK
+hermes plugins list                                         # hermes-guard, enabled, 1.1.1
+```
+
+Then start a Hermes session as usual. The hooks run automatically:
+every inbound message is scanned before the model sees it, and every
+runtime tool call is scanned before it runs. Check the live state with:
+
+```bash
+python -m hermes_guard status       # Forensic X-Ray HUD
+```
+
+## How it works
+
+1. **Hooks only, no core overrides.** The plugin registers through the public `register_*` APIs only: `pre_llm_call` and `pre_tool_call`. It does not modify Hermes core. The entry point is `register(ctx)` in `src/hermes_guard/hooks.py`, re-exported by the root `__init__.py` beside `plugin.yaml` (required by the Hermes validator's loadable check).
+2. **Local-only scanning.** All detection runs on the machine, in the plugin process. No network calls are made, and no data leaves the machine. Python standard library + SQLite only.
+3. **Zero model calls on block.** A blocked or quarantined turn never reaches the model, so an attack cannot consume model time or influence a reply.
+4. **Quarantine, not deletion.** Held messages are stored locally in the plugin data directory (`plugin_db`), so they survive updates and remain available for review. Previews shown by the review tool are truncated to 160 characters; the full original is never printed.
+5. **Secret redaction.** API keys, tokens, and private-key blocks are masked to `[REDACTED-SECRET]` before anything is persisted (quarantine preview/full text, ledger preview).
+6. **Session taint.** A session that hits FLAG/QUARANTINE becomes tainted for 60 minutes; its tool calls get stricter scrutiny.
+7. **Call-ID race guard.** The identical tool call (same session, tool, arguments) repeated within 10 seconds is blocked as a retry-storm/replay.
+8. **Hash-chained ledger.** Every guard decision is appended to a SHA-256 chain, so tampering with the audit trail is detectable.
 
 ## The four layers (L1–L4)
 
@@ -31,6 +104,10 @@ Nothing about this plugin requires the model to judge the threat. Detection is d
 | L3 | token | Special-token markers `<\|...\|>` and mixed-script homoglyphs. |
 | L4 | encoding | Base64 deep-inspection: a candidate token (≥20 chars, token entropy ≥4.0) is decoded (validate=True, ≥75% printable) and the decoded content is scanned for hidden instructions, special tokens, and RCE patterns. A blob that decodes to non-printable binary is data, not an instruction, and is ignored. |
 
+Each layer is a separate sub-scan. A sub-scan that raises is isolated:
+the other layers still run, the degraded layer is recorded, and the
+turn is handled by the fail-closed setting (see below).
+
 ## The three tiers
 
 | Tier | When | What happens |
@@ -40,6 +117,8 @@ Nothing about this plugin requires the model to judge the threat. Detection is d
 | **FLAG** | Low suspicion | The message passes through, with a short warning note injected so the model treats the suspicious content as data, not instructions. |
 
 A detector exception fails closed by default (`fail_closed_on_error: true`): the turn is blocked, the degraded layer is recorded, and the error is logged. Set it to `false` in the plugin config to pass with a warning instead. A degraded sub-scan escalates to at least FLAG locally; the hook decides block-vs-flag from this config.
+
+Quarantine release is **manual by design**: a hook can only block/inject/pass — it cannot re-deliver a message on the user's behalf. You review an entry with `guard_review`, then re-send it yourself if you judge it safe.
 
 ## Posture Score
 
@@ -56,22 +135,24 @@ false_positive = round(min(15, (released / total interceptions) × 30))
 
 The ledger-verified component is always computed live from the stored hash chain (an empty ledger counts as verified). Correct blocks, quarantines, and flags **never** reduce the score — a guard that blocks many real attacks still scores 100. A fresh install scores 100.
 
+Worked example (verified by tests in `tests/test_benchmark.py`): base 100, 1 held entry, 0 degraded layers, 0 released of 6 interceptions → **95**. More cases: 5 held entries → 75 (pending cap 25); 1 degraded layer → 85; released 1 of 1 → 85 (FP penalty 15); floor 0, never negative.
+
 The simulation arena score is shown separately and never mixed into the live posture.
 
 ## Predator Pattern Store
 
 When a hidden-instruction phrase causes a hold, the phrase is recorded in a local pattern store. Releasing the entry (`guard_review release`) suppresses that pattern: the same phrase **alone** no longer quarantines a message — a human corrected it. The suppression is narrow: a suppressed phrase combined with any other trigger (a special token, a decoded payload, an invisible load) still quarantines.
 
-## How it works
+## Simulation arena
 
-1. **Hooks only, no core overrides.** The plugin registers through the public `register_*` APIs only: `pre_llm_call` and `pre_tool_call`. It does not modify Hermes core. The entry point is `register(ctx)` in `src/hermes_guard/hooks.py`, re-exported by the root `__init__.py` beside `plugin.yaml` (required by the Hermes validator's loadable check).
-2. **Local-only scanning.** All detection runs on the machine, in the plugin process. No network calls are made, and no data leaves the machine. Python standard library + SQLite only.
-3. **Zero model calls on block.** A blocked or quarantined turn never reaches the model, so an attack cannot consume model time or influence a reply.
-4. **Quarantine, not deletion.** Held messages are stored locally in the plugin data directory (`plugin_db`), so they survive updates and remain available for review. Previews shown by the review tool are truncated to 160 characters; the full original is never printed.
-5. **Secret redaction.** API keys, tokens, and private-key blocks are masked to `[REDACTED-SECRET]` before anything is persisted (quarantine preview/full text, ledger preview).
-6. **Session taint.** A session that hits FLAG/QUARANTINE becomes tainted for 60 minutes; its tool calls get stricter scrutiny.
-7. **Call-ID race guard.** The identical tool call (same session, tool, arguments) repeated within 10 seconds is blocked as a retry-storm/replay.
-8. **Hash-chained ledger.** Every guard decision is appended to a SHA-256 chain, so tampering with the audit trail is detectable.
+`guard_review action=simulate` runs the arena in memory only. Live telemetry and the quarantine DB are never touched. Every vector must match its expected tier.
+
+| Section | Vectors | Result |
+|---|---|---|
+| Message vectors | 21 (A01–A14 attacks, S01–S07 near-misses) | **21/21 correct** |
+| Tool-arg vectors | 7 (A15, A16, S08 + T01–T04) | **7/7 correct** |
+
+Tier breakdown of the 21 message vectors: block 6, quarantine 8, flag 0, pass 7. The full list with reasons is in [`tests.md`](tests.md); the vectors are defined as data in `fixtures/vectors.json`. Numbers are measured, not estimated — see [`docs/BENCHMARK.md`](docs/BENCHMARK.md) for the test suite, arena, and scan-latency measurements.
 
 ## The guard_review tool
 
@@ -87,8 +168,6 @@ When a hidden-instruction phrase causes a hold, the phrase is recorded in a loca
 | `release` | Mark one entry released and return the original text for manual re-send. Counts as a false positive; also suppresses the entry's pattern. |
 | `delete` | Permanently delete one quarantine entry. |
 
-Quarantine release is **manual by design**: a hook can only block/inject/pass — it cannot re-deliver a message on the user's behalf. You review an entry with `guard_review`, then re-send it yourself if you judge it safe.
-
 ## CLI
 
 ```bash
@@ -100,14 +179,46 @@ python -m hermes_guard hud          # Write guard-hud.html (standalone dashboard
 
 Preview the dashboard: [`docs/guard-hud-sample.html`](docs/guard-hud-sample.html) — a fresh-install render (empty state, Posture 100/100, arena 21/21 + 7/7 from an in-memory run).
 
-## Tests
+## Configuration (`plugin.yaml` config_schema)
+
+| Key | Default | Meaning |
+|---|---|---|
+| `fail_closed_on_error` | `true` | Block the turn when the detector raises. |
+| `quarantine_mode` | `block_and_manual_resend` | Held messages are blocked; user re-sends manually. (`cleaned_resend` returns a cleaned copy via `clean_copy`.) |
+| `callid_race_window_s` | `10` | Seconds for the call-ID race window. |
+| `taint_ttl_minutes` | `60` | Minutes a session stays tainted. |
+| `redact_secrets` | `true` | Mask secrets as `[REDACTED-SECRET]` before persistence. |
+
+## Testing
 
 ```bash
 pip install pytest
 python -m pytest tests/ -q
 ```
 
-152 tests, all passing (see `docs/BENCHMARK.md`). The 24 canonical simulation vectors (21 message + 3 tool-arg) are listed in `tests.md` and defined as data in `fixtures/vectors.json` (loaded by `src/hermes_guard/vectors.py`); the v1.0.0 extra vectors run as pytest cases in `tests/test_extended_vectors.py`.
+**152 tests, all passing** (see [`docs/BENCHMARK.md`](docs/BENCHMARK.md)). The 24 canonical simulation vectors (21 message + 3 tool-arg) are listed in [`tests.md`](tests.md) and defined as data in `fixtures/vectors.json` (loaded by `src/hermes_guard/vectors.py`); the v1.0.0 extra vectors run as pytest cases in `tests/test_extended_vectors.py`.
+
+## Disclosure
+
+- **No network calls.** The plugin makes no outbound requests of any kind.
+- **No credentials.** It does not need, read, or store any credential, token, or secret.
+- **No data leaves the machine.** Scanning is local; quarantine records are stored in the local plugin data directory.
+- **No core overrides.** Only the public `register_*` APIs are used.
+- **No self-updater.** The plugin never updates itself or downloads anything.
+- **Quarantine "release" is manual.** A held message is released only by re-sending it yourself after reviewing it with `guard_review`. There is no automatic release.
+
+## Known issues
+
+- Quarantine release is manual re-send (see Disclosure). There is no one-click release.
+- Talking *about* jailbreak phrases — for example, quoting one to discuss it — can be flagged, because the scanner sees the pattern, not the intent.
+- Detection is pattern-based and deterministic; novel obfuscation that matches no pattern will pass. The arena measures coverage against known vectors only.
+- Very short Base64 tokens (<20 chars, or token entropy <4.0) are skipped by design to avoid false positives on ordinary words — a short token carrying a threat would need a longer carrier to be caught by L4.
+- Live Hermes hook wiring is verified on Hermes 0.21.5 (Phase 3: `validate` 13/13, `doctor`, `plugins list`, live hook-fire test). The `register_tool` keyword style (>= 0.23) is per the documented API, not live-verified — no 0.23 install was available.
+
+## Requirements
+
+- Hermes Agent `>= 0.21.5` (the `pre_llm_call` and `pre_tool_call` hooks are available in 0.21.5 — verified live in Phase 3; the `register_tool` keyword style needs >= 0.23, with a positional fallback for 0.21.5).
+- Python `>= 3.11`. Standard library + SQLite only; no runtime dependencies.
 
 ## v1.1.1 changes (Phase 3 — PC verification)
 
@@ -128,45 +239,14 @@ Phase 3 on the real Hermes 0.21.5 found four things v1.1.0 got wrong; all fixed 
 - Behaviour change: a Base64 blob decoding to non-printable binary is now ignored (data, not instruction).
 - Note: the Argon Round 3 sprint table claimed `plugin.yaml`, `tools.py`, and `tests` did not exist yet — they did (v1.0.0). Only the hooks, pattern store, redaction, CI, and skill were new in v1.1.0.
 
-## Install
+## Contributing
 
-```bash
-hermes plugins install elianjuan-g/hermes-guard
-hermes plugins enable hermes-guard
-```
-
-## Configuration (`plugin.yaml` config_schema)
-
-| Key | Default | Meaning |
-|---|---|---|
-| `fail_closed_on_error` | `true` | Block the turn when the detector raises. |
-| `quarantine_mode` | `block_and_manual_resend` | Held messages are blocked; user re-sends manually. (`cleaned_resend` returns a cleaned copy via `clean_copy`.) |
-| `callid_race_window_s` | `10` | Seconds for the call-ID race window. |
-| `taint_ttl_minutes` | `60` | Minutes a session stays tainted. |
-| `redact_secrets` | `true` | Mask secrets as `[REDACTED-SECRET]` before persistence. |
-
-## Requirements
-
-- Hermes Agent `>= 0.21.5` (the `pre_llm_call` and `pre_tool_call` hooks are available in 0.21.5 — verified live in Phase 3; the `register_tool` keyword style needs >= 0.23, with a positional fallback for 0.21.5).
-- Python `>= 3.11`. Standard library + SQLite only; no runtime dependencies.
-
-## Disclosure
-
-- **No network calls.** The plugin makes no outbound requests of any kind.
-- **No credentials.** It does not need, read, or store any credential, token, or secret.
-- **No data leaves the machine.** Scanning is local; quarantine records are stored in the local plugin data directory.
-- **No core overrides.** Only the public `register_*` APIs are used.
-- **No self-updater.** The plugin never updates itself or downloads anything.
-- **Quarantine "release" is manual.** A held message is released only by re-sending it yourself after reviewing it with `guard_review`. There is no automatic release.
-
-## Known issues
-
-- Quarantine release is manual re-send (see Disclosure). There is no one-click release.
-- Talking *about* jailbreak phrases — for example, quoting one to discuss it — can be flagged, because the scanner sees the pattern, not the intent.
-- Detection is pattern-based and deterministic; novel obfuscation that matches no pattern will pass. The arena measures coverage against known vectors only.
-- Very short Base64 tokens (<20 chars, or token entropy <4.0) are skipped by design to avoid false positives on ordinary words — a short token carrying a threat would need a longer carrier to be caught by L4.
-- Live Hermes hook wiring is verified on Hermes 0.21.5 (Phase 3: `validate` 13/13, `doctor`, `plugins list`, live hook-fire test). The `register_tool` keyword style (>= 0.23) is per the documented API, not live-verified — no 0.23 install was available.
+See [CONTRIBUTING.md](CONTRIBUTING.md). In short: read the README first (especially the four layers and the "Scope" section), make small focused changes, include tests when you change detection behaviour, and never write a security claim without pointing at the code + the test that proves it.
 
 ## License
 
-MIT. See `LICENSE`.
+MIT — see [LICENSE](LICENSE).
+
+---
+
+*Hermes Guard is an independent community plugin. It is not affiliated with, endorsed by, or connected to Nous Research or the Hermes Agent project. "Hermes Agent" is a project by Nous Research; this plugin only integrates with it through its public plugin API.*

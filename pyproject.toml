@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hermes-guard"
+version = "1.1.1"
+description = "Defensive prompt-injection guard for Hermes Agent — local, deterministic, fail-closed."
+authors = [{name = "Elian Juan Gonzales"}]
+license = {text = "MIT"}
+readme = "README.md"
+requires-python = ">=3.11"
+
+[project.urls]
+Homepage = "https://github.com/elianjuan-g/hermes-guard"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

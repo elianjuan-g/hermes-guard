@@ -1,0 +1,71 @@
+name: hermes-guard
+version: 1.1.1
+description: "Defensive prompt-injection guard for Hermes Agent — local, deterministic, fail-closed."
+author: Elian Juan Gonzales
+license: MIT
+requires_hermes: ">=0.21.5"
+
+# Top-level declarations the Hermes 0.21.5 loader + validator read.
+provides_tools:
+  - guard_review
+provides_hooks:
+  - pre_llm_call
+  - pre_tool_call
+
+# Flat key -> spec format (#64165): the Hermes loader type-checks
+# config values against this shape at load time; the JSON-Schema
+# style ({type: object, properties: ...}) is skipped with a warning.
+config_schema:
+  fail_closed_on_error:
+    type: boolean
+    default: true
+    description: "When the detector raises an exception, block the turn (true) instead of letting it pass. Default true (fail-closed)."
+  quarantine_mode:
+    type: string
+    enum:
+      - block_and_manual_resend
+      - cleaned_resend
+    default: block_and_manual_resend
+    description: "block_and_manual_resend (default): held messages are blocked and the user re-sends them manually after review. cleaned_resend: guard_review clean_copy returns a cleaned text for manual re-send."
+  callid_race_window_s:
+    type: integer
+    minimum: 1
+    maximum: 120
+    default: 10
+    description: "Seconds inside which an identical tool call (same session, tool, args) is treated as a race and blocked."
+  taint_ttl_minutes:
+    type: integer
+    minimum: 1
+    maximum: 1440
+    default: 60
+    description: "Minutes a session stays tainted after a FLAG/QUARANTINE hit."
+  redact_secrets:
+    type: boolean
+    default: true
+    description: "Mask API keys, tokens and private-key blocks as [REDACTED-SECRET] in quarantine previews, full text and ledger entries."
+
+tools:
+  - name: guard_review
+    description: "Inspect the quarantine log, run the simulation arena (21 message + 7 tool-arg vectors), or render the Forensic X-Ray HUD."
+    schema:
+      type: object
+      properties:
+        action:
+          type: string
+          enum: [status, list, show, simulate, clean_copy, release, delete]
+          description: "status: X-Ray HUD. list: recent held messages. show: one held message by id. simulate: simulation arena (21 message + 7 tool-arg vectors, in-memory). clean_copy: cleaned text for manual re-send. release: mark reviewed, return original for manual re-send. delete: remove one entry."
+        id:
+          type: string
+          description: "Quarantine entry id (required for show, clean_copy, release, delete)."
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 20
+          description: "Max entries for action=list."
+      required: [action]
+      additionalProperties: false
+
+hooks:
+  - pre_llm_call
+  - pre_tool_call

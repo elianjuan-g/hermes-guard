@@ -98,6 +98,8 @@ python -m hermes_guard simulate     # Simulation arena (in-memory)
 python -m hermes_guard hud          # Write guard-hud.html (standalone dashboard)
 ```
 
+Preview the dashboard: [`docs/guard-hud-sample.html`](docs/guard-hud-sample.html) — a fresh-install render (empty state, Posture 100/100, arena 21/21 + 7/7 from an in-memory run).
+
 ## Tests
 
 ```bash
@@ -107,9 +109,9 @@ python -m pytest tests/ -q
 
 152 tests, all passing (see `docs/BENCHMARK.md`). The 24 canonical simulation vectors (21 message + 3 tool-arg) are listed in `tests.md` and defined as data in `fixtures/vectors.json` (loaded by `src/hermes_guard/vectors.py`); the v1.0.0 extra vectors run as pytest cases in `tests/test_extended_vectors.py`.
 
-## v1.1.1 changes (Fase 3 — PC verification)
+## v1.1.1 changes (Phase 3 — PC verification)
 
-Fase 3 on the real Hermes 0.21.5 found four things v1.1.0 got wrong; all fixed here, corpus byte-identical (verified by diff):
+Phase 3 on the real Hermes 0.21.5 found four things v1.1.0 got wrong; all fixed here, corpus byte-identical (verified by diff):
 
 - `requires_hermes` lowered `>=0.23.0` → `>=0.21.5`: the hook APIs (`register_hook`, `pre_llm_call`, `pre_tool_call`) exist in 0.21.5; the floor was an untested assumption. Verified live by `hermes plugins validate` + `doctor` + `list` on 0.21.5.
 - `register()` now tries the `>= 0.23` keyword-style `register_tool(parameters=...)` first and falls back to the 0.21.5 positional style `(name, toolset, schema, handler)` on `TypeError`. The new-style path is per the documented API, not live-verified (no 0.23 install available).
@@ -145,7 +147,7 @@ hermes plugins enable hermes-guard
 
 ## Requirements
 
-- Hermes Agent `>= 0.23.0` (the version where the `pre_llm_call` and `pre_tool_call` hooks are available).
+- Hermes Agent `>= 0.21.5` (the `pre_llm_call` and `pre_tool_call` hooks are available in 0.21.5 — verified live in Phase 3; the `register_tool` keyword style needs >= 0.23, with a positional fallback for 0.21.5).
 - Python `>= 3.11`. Standard library + SQLite only; no runtime dependencies.
 
 ## Disclosure
@@ -163,7 +165,7 @@ hermes plugins enable hermes-guard
 - Talking *about* jailbreak phrases — for example, quoting one to discuss it — can be flagged, because the scanner sees the pattern, not the intent.
 - Detection is pattern-based and deterministic; novel obfuscation that matches no pattern will pass. The arena measures coverage against known vectors only.
 - Very short Base64 tokens (<20 chars, or token entropy <4.0) are skipped by design to avoid false positives on ordinary words — a short token carrying a threat would need a longer carrier to be caught by L4.
-- Live Hermes hook wiring has not yet been verified against a real Hermes install (no Hermes CLI in the build VM); see `DECISIONS.md` Track 2.
+- Live Hermes hook wiring is verified on Hermes 0.21.5 (Phase 3: `validate` 13/13, `doctor`, `plugins list`, live hook-fire test). The `register_tool` keyword style (>= 0.23) is per the documented API, not live-verified — no 0.23 install was available.
 
 ## License
 

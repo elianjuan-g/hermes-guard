@@ -61,7 +61,7 @@ Simulation is never mixed into it.
 ## Run it
 
 ```bash
-python -m pytest -q                 # full suite (151 tests)
+python -m pytest -q                 # full suite (152 tests)
 python -m hermes_guard status       # live HUD
 python -m hermes_guard simulate     # arena (in-memory)
 python -m hermes_guard scan <file>  # scan one text file

@@ -14,8 +14,8 @@ and the hook contract in hermes-agent (hermes_cli/plugins_dispatch.py):
 
 The hook LOGIC lives in handle_pre_llm_call() / handle_pre_tool_call()
 as pure, unit-testable functions. The thin hook wrappers only translate
-messages and hook return values. Live Hermes wiring still needs Fase 3
-verification on the PC (no Hermes install exists in this VM).
+messages and hook return values. Live Hermes wiring verified in Phase 3
+on Hermes 0.21.5 (validate + doctor + list + live hook-fire test).
 
 BLOCK and QUARANTINE both veto the turn (a hook can only block /
 inject / pass — there is no hold-and-deliver); they differ in the
@@ -409,7 +409,7 @@ def register(ctx):
             )
         except TypeError:
             # Hermes <= 0.21.5: positional (name, toolset, schema,
-            # handler). Verified live on 0.21.5 (Fase 3); the >= 0.23
+            # handler). Verified live on 0.21.5 (Phase 3); the >= 0.23
             # keyword path is per the documented API, not live-verified.
             ctx.register_tool(
                 "guard_review", "hermes_guard", GUARD_REVIEW_SCHEMA,

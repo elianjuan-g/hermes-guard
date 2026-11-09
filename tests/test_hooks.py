@@ -248,7 +248,7 @@ class TestRegister:
     def test_register_falls_back_to_old_style_tool_api(self, db_path):
         # Hermes 0.21.5 register_tool is positional
         # (name, toolset, schema, handler) — the >= 0.23 keyword call
-        # (parameters=...) raises TypeError there. Verified live Fase 3.
+        # (parameters=...) raises TypeError there. Verified live in Phase 3.
         class OldStyleCtx:
             def __init__(self):
                 self.hooks = {}

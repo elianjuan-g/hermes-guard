@@ -1,4 +1,4 @@
-# Benchmark — Hermes Guard v1.1.1
+# Benchmark — Hermes Guard v1.1.2
 
 Measured on this VM (Python 3.12.3, 2026-11-09). All numbers are real
 measurements, not estimates. Reproduce with:
@@ -74,7 +74,7 @@ Verified by tests in `tests/test_benchmark.py`:
 - No comparison against other plugins (llm-antidote, blackbox, etc.).
   Any such comparison would need the same vectors run against each
   plugin under identical conditions.
-- No WASM/Rust component exists in v1.1.1 (Python-only by design; WASM
+- No WASM/Rust component exists in v1.1.2 (Python-only by design; WASM
   stays P2), so no cross-language speed claim is made.
 - No production traffic data. The arena measures known vectors only;
   novel obfuscation that matches no pattern will pass.

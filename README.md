@@ -8,7 +8,7 @@
 
 [![Docs](https://img.shields.io/badge/docs-README-blue?style=flat)](https://github.com/elianjuan-g/hermes-guard#readme)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green?style=flat)](LICENSE)
-![Version](https://img.shields.io/badge/version-v1.1.1-e8b64c?style=flat)
+![Version](https://img.shields.io/badge/version-v1.1.2-e8b64c?style=flat)
 ![Tests](https://img.shields.io/badge/tests-152%2F152-brightgreen?style=flat)
 ![Hermes](https://img.shields.io/badge/Hermes-%3E%3D0.21.5-orange?style=flat)
 ![Local](https://img.shields.io/badge/local-100%25-blue?style=flat)
@@ -73,7 +73,7 @@ Verify the install (verified live on Hermes 0.21.5 in Phase 3):
 ```bash
 hermes plugins validate ~/.hermes/plugins/hermes-guard   # 13/13 checks
 hermes plugins doctor hermes-guard                          # OK
-hermes plugins list                                         # hermes-guard, enabled, 1.1.1
+hermes plugins list                                         # hermes-guard, enabled, 1.1.2
 ```
 
 Then start a Hermes session as usual. The hooks run automatically:
@@ -165,8 +165,8 @@ Tier breakdown of the 21 message vectors: block 6, quarantine 8, flag 0, pass 7.
 | `show` | One held message by id (160-char preview only). |
 | `simulate` | Run the simulation arena in memory (21 message vectors + 7 tool-arg vectors). Never touches live telemetry or the quarantine DB. |
 | `clean_copy` | Cleaned copy of one entry (invisible chars stripped, obfuscated blobs redacted) for manual re-send. |
-| `release` | Mark one entry released and return the original text for manual re-send. Counts as a false positive; also suppresses the entry's pattern. |
-| `delete` | Permanently delete one quarantine entry. |
+| `release` | Owner-only — NOT a model action. Use the `/guard-release <id>` slash command in session. |
+| `delete` | Owner-only — NOT a model action. Use the `/guard-delete <id>` slash command in session. |
 
 ## CLI
 
@@ -196,7 +196,7 @@ pip install pytest
 python -m pytest tests/ -q
 ```
 
-**152 tests, all passing** (see [`docs/BENCHMARK.md`](docs/BENCHMARK.md)). The 24 canonical simulation vectors (21 message + 3 tool-arg) are listed in [`tests.md`](tests.md) and defined as data in `fixtures/vectors.json` (loaded by `src/hermes_guard/vectors.py`); the v1.0.0 extra vectors run as pytest cases in `tests/test_extended_vectors.py`.
+**168 tests, all passing** (see [`docs/BENCHMARK.md`](docs/BENCHMARK.md)). The 24 canonical simulation vectors (21 message + 3 tool-arg) are listed in [`tests.md`](tests.md) and defined as data in `fixtures/vectors.json` (loaded by `src/hermes_guard/vectors.py`); the v1.0.0 extra vectors run as pytest cases in `tests/test_extended_vectors.py`.
 
 ## Disclosure
 
@@ -209,16 +209,27 @@ python -m pytest tests/ -q
 
 ## Known issues
 
-- Quarantine release is manual re-send (see Disclosure). There is no one-click release.
+- Quarantine release is manual re-send (see Disclosure). There is no one-click release. `release`/`delete` are owner-only slash commands (`/guard-release <id>`, `/guard-delete <id>`); the model tool cannot call them.
+- Subshell patterns (`$(...)`, backticks) are checked only for command-running tools (`terminal`, `execute_code`, `shell`) and are bounded to 512 chars: a subshell longer than 512 chars is not matched, and backticks / `$(...)` in `write_file` / `read` / `note` content (Markdown, shell scripts) are not blocked. `rm -rf`, pipe-to-shell and `/dev/tcp` still block for every tool.
 - Talking *about* jailbreak phrases — for example, quoting one to discuss it — can be flagged, because the scanner sees the pattern, not the intent.
 - Detection is pattern-based and deterministic; novel obfuscation that matches no pattern will pass. The arena measures coverage against known vectors only.
 - Very short Base64 tokens (<20 chars, or token entropy <4.0) are skipped by design to avoid false positives on ordinary words — a short token carrying a threat would need a longer carrier to be caught by L4.
-- Live Hermes hook wiring is verified on Hermes 0.21.5 (Phase 3: `validate` 13/13, `doctor`, `plugins list`, live hook-fire test). The `register_tool` keyword style (>= 0.23) is per the documented API, not live-verified — no 0.23 install was available.
+- Live Hermes hook wiring is verified on Hermes 0.21.5 (Phase 3: `validate` 13/13, `doctor`, `plugins list`, live hook-fire test; v1.1.2 re-verified the same way). `register()` uses ONE `register_tool(name, toolset, schema, handler)` call — the single form that matches the 0.21.5 signature and current Hermes alike; the old `parameters=` keyword call matched no signature.
 
 ## Requirements
 
-- Hermes Agent `>= 0.21.5` (the `pre_llm_call` and `pre_tool_call` hooks are available in 0.21.5 — verified live in Phase 3; the `register_tool` keyword style needs >= 0.23, with a positional fallback for 0.21.5).
+- Hermes Agent `>= 0.21.5` (the `pre_llm_call` and `pre_tool_call` hooks are available in 0.21.5 — verified live in Phase 3 and re-verified in v1.1.2; `register_tool` is called once with `(name, toolset, schema, handler)`, the form that matches 0.21.5 and current Hermes).
 - Python `>= 3.11`. Standard library + SQLite only; no runtime dependencies.
+
+## v1.1.2 changes (teknium1 review — 5 fixes)
+
+Maintainer review on PR #151899 (`ccb0f52`, CHANGES_REQUESTED) found five things that were broken in real Hermes even though the unit tests were green. All five fixed here, corpus byte-identical:
+
+1. **`pre_llm_call` now scans real turns.** The hook took `messages=None`, but Hermes 0.21.5 calls it with `user_message` + `conversation_history` — so `messages` was always `None` and the hook returned early on every real turn. New signature `pre_llm_call_hook(user_message=None, conversation_history=None, session_id="default", **kwargs)`, scanning `user_message` as a string or a content-parts list. New tests call the hook with exactly the core kwargs (`session_id, task_id, turn_id, user_message, conversation_history, is_first_turn, model, platform, parent_session_id, sender_id` — verified against live `agent/turn_context.py:_collect_pre_llm_call_context`).
+2. **`tools.py` moved into the package.** The handler is now `tool_guard_review(args, **kwargs)` reading `args.get("action")` / `"id"` / `"limit"` (core calls handlers as `handler(args_dict, **kwargs)`), and `tools.py` lives at `src/hermes_guard/tools.py` behind a relative import — `import tools` inside Hermes used to bind Hermes's own `tools` package and raise on every call.
+3. **One `register_tool` call.** The old `parameters=` keyword call matched no `register_tool` signature, and the fallback passed a bare JSON Schema, so the model saw `guard_review` with no parameters. Now a single `ctx.register_tool(name="guard_review", toolset="hermes_guard", schema={"name": ..., "description": ..., "parameters": GUARD_REVIEW_SCHEMA}, handler=tool_guard_review)` — the one form matching the 0.21.5 signature (`hermes_cli/plugins.py:456`) and current Hermes alike.
+4. **Release/delete are owner-only slash commands.** `release` and `delete` left the model tool (`/guard-release <id>`, `/guard-delete <id>` via `ctx.register_command`, verified live on 0.21.5) — injected text in a tool result can no longer steer the model into weakening the guard. The reviewer's other option — `pre_tool_call` returning `{"action": "approve"}` — does exist on 0.21.5 (`plugins.py` `_dispatch_pre_tool_call_hooks` → `request_tool_approval`, fail-closed on gate error/deny); it was not chosen because it still leaves release/delete model-callable behind a per-attempt approval prompt, while `register_command` removes the capability from the model entirely. The model tool refuses `release`/`delete` with an owner-only error.
+5. **Subshell patterns bounded + scoped.** `\$\([^)]+\)` / `` `[^`]+` `` were quadratic on unclosed runs (2 s on a 120 KB `write_file` body) — now `\$\([^)]{1,512}\)` / `` `[^`\n]{1,512}` ``, and the check applies only to command-running tools (`terminal`, `execute_code`, `shell`). Markdown and shell-script writes containing backticks or `$(...)` are no longer blocked; `rm -rf`, pipe-to-shell and `/dev/tcp` still block for every tool. The 120 KB unclosed-`$(` case now scans in well under 1 s (measured in tests).
 
 ## v1.1.1 changes (Phase 3 — PC verification)
 

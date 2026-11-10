@@ -6,7 +6,7 @@ import sqlite3
 
 import pytest
 
-import tools
+from hermes_guard import tools
 from hermes_guard import storage
 
 
@@ -87,7 +87,7 @@ class TestPatternStore:
             path_override=db_path)
         entry = storage.get_entry(eid, path_override=db_path)
         assert entry["pattern"] == "ignore all previous instructions"
-        tools.guard_review("release", id=eid, path_override=db_path)
+        tools.release_entry(eid, path_override=db_path)
         assert storage.is_suppressed("ignore all previous instructions",
                                      path_override=db_path) is True
 

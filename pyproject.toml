@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hermes-guard"
-version = "1.1.1"
+version = "1.1.2"
 description = "Defensive prompt-injection guard for Hermes Agent — local, deterministic, fail-closed."
 authors = [{name = "Elian Juan Gonzales"}]
 license = {text = "MIT"}

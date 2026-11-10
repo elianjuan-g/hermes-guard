@@ -7,7 +7,7 @@ from html.parser import HTMLParser
 
 import pytest
 
-import tools
+from hermes_guard import tools
 from hermes_guard import storage, xray
 
 
@@ -80,9 +80,11 @@ class TestHudHtml:
         # Run the real CLI: `python -m hermes_guard hud --out <file>`.
         # HERMES_GUARD_DATA_DIR points the live-state fallback DB at
         # a tmp dir, so the test never touches real state.
-        # tools.__file__ is <root>/tools.py, so its dirname is the
-        # plugin root.
-        root = os.path.dirname(os.path.abspath(tools.__file__))
+        # tools.__file__ is <root>/src/hermes_guard/tools.py (the tool
+        # module moved into the package in v1.1.2), so the plugin root
+        # is three levels up.
+        root = os.path.dirname(os.path.dirname(os.path.dirname(
+            os.path.abspath(tools.__file__))))
         out = str(tmp_path / "guard-hud.html")
         env = dict(os.environ)
         env["PYTHONPATH"] = os.path.join(root, "src")

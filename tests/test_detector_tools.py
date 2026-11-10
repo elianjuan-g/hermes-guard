@@ -106,3 +106,94 @@ class TestScanToolArguments:
         out = detector.scan_tool_arguments(self._args(command="ls"))
         assert out["score"] == 0
         assert out["reasons"] == []
+
+
+class TestSubshellScoping:
+    """v1.1.2 (teknium1 review item 5): the subshell patterns are
+    BOUNDED ({1,512}) and SCOPED to command-running tools. Anything
+    else (write_file, read, note, ...) can legitimately contain
+    backticks / $(...) as content — Markdown and shell scripts — so
+    those are not blocked for it. The remaining RCE alternatives
+    (rm, pipe-to-shell, /dev/tcp) apply to every tool call."""
+
+    def _args(self, **kw):
+        import json
+        return json.dumps(kw, sort_keys=True, ensure_ascii=False)
+
+    def test_unclosed_subshell_120kb_is_fast_and_passes(self):
+        # The reviewer's case: 2 s on a 120 KB write_file body with
+        # an unclosed $( — the old unbounded pattern was quadratic.
+        import time
+        body = "$(" + "x" * 120_000
+        start = time.monotonic()
+        out = detector.scan_tool_arguments(
+            self._args(content=body), tool="write_file")
+        elapsed = time.monotonic() - start
+        assert elapsed < 1.0, "scan took %.2fs" % elapsed
+        assert out["tier"] == "pass"
+
+    def test_unclosed_subshell_120kb_fast_without_tool(self):
+        # Same body through the tool-less path (arena / direct callers):
+        # fail-closed means the full pattern applies, and it must
+        # still be fast.
+        import time
+        body = "$(" + "x" * 120_000
+        start = time.monotonic()
+        out = detector.scan_tool_arguments(self._args(content=body))
+        elapsed = time.monotonic() - start
+        assert elapsed < 1.0, "scan took %.2fs" % elapsed
+        assert out["tier"] == "pass"
+
+    def test_closed_subshell_over_512_not_matched(self):
+        # Beyond the 512-char bound the pattern does not match, even
+        # for a command tool — a long subshell is not a short
+        # injection; the bound is the documented trade-off.
+        body = "$(" + "x" * 600 + ")"
+        out = detector.scan_tool_arguments(
+            self._args(command=body), tool="terminal")
+        assert out["tier"] == "pass"
+
+    def test_closed_subshell_within_512_blocked_for_command_tool(self):
+        body = "$(" + "x" * 100 + ")"
+        out = detector.scan_tool_arguments(
+            self._args(command="echo " + body), tool="terminal")
+        assert out["tier"] == "block"
+        assert any("RCE" in r for r in out["reasons"])
+
+    def test_backtick_blocked_for_command_tool_passes_for_write(self):
+        args = self._args(command="echo `id`")
+        assert detector.scan_tool_arguments(
+            args, tool="terminal")["tier"] == "block"
+        assert detector.scan_tool_arguments(
+            self._args(content="echo `id`"), tool="write_file")["tier"] \
+            == "pass"
+
+    def test_markdown_with_backticks_passes_for_write_file(self):
+        # The reviewer's example: most Markdown writes contain
+        # backticks and must not be blocked.
+        md = "# Notes\n\nUse `git status` to check, then run `pytest -q`.\n"
+        out = detector.scan_tool_arguments(
+            self._args(path="./notes.md", content=md), tool="write_file")
+        assert out["tier"] == "pass"
+
+    def test_dollar_paren_in_shell_script_passes_for_write(self):
+        script = "#!/bin/sh\nOUT=$(date +%Y)\necho $OUT\n"
+        out = detector.scan_tool_arguments(
+            self._args(path="./run.sh", content=script), tool="write_file")
+        assert out["tier"] == "pass"
+
+    def test_rm_rf_blocks_for_any_tool(self):
+        # The non-subshell alternatives are NOT scoped: rm -rf in a
+        # write_file body is still an execution, not a discussion.
+        out = detector.scan_tool_arguments(
+            self._args(content="rm -rf /tmp/x"), tool="write_file")
+        assert out["tier"] == "block"
+
+    def test_rce_pattern_match_tool_param(self):
+        assert detector.rce_pattern_match("echo $(id)", tool="terminal")
+        assert detector.rce_pattern_match("echo $(id)",
+                                          tool="write_file") is None
+        # Unknown caller (tool=None) keeps the full pattern: fail-closed.
+        assert detector.rce_pattern_match("echo $(id)") is not None
+        assert detector.rce_pattern_match("rm -rf /tmp/x",
+                                          tool="write_file") is not None

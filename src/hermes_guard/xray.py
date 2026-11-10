@@ -46,7 +46,7 @@ def render_status_hud(stats, score, recent, arena=None, detail=None):
                       "intercepted": 0}
 
     lines = []
-    lines.append("HERMES GUARD v1.1.1 — FORENSIC X-RAY HUD")
+    lines.append("HERMES GUARD v1.1.2 — FORENSIC X-RAY HUD")
     lines.append("=" * 48)
     lines.append("POSTURE (live, real traffic only): %d/100" % score)
     lines.append("  Formula: base 100 - pending - degraded - false_positive")
@@ -110,9 +110,10 @@ def render_status_hud(stats, score, recent, arena=None, detail=None):
     lines.append("  guard_review action=show id=<id>    — one held message")
     lines.append("  guard_review action=clean_copy id=<id>")
     lines.append("      — cleaned text for manual re-send")
-    lines.append("  guard_review action=release id=<id>")
+    lines.append("  /guard-release <id> (owner-only slash command)")
     lines.append("      — mark reviewed, return original for manual re-send")
-    lines.append("  guard_review action=delete id=<id>  — remove one entry")
+    lines.append("  /guard-delete <id> (owner-only slash command)")
+    lines.append("      — remove one entry")
     return "\n".join(lines)
 
 
@@ -191,7 +192,7 @@ def build_status_data(path_override=None):
     ran_at = datetime.now(timezone.utc).isoformat()[:19] + "Z"
     sim["ran_at"] = ran_at
     return {
-        "version": "1.1.1",
+        "version": "1.1.2",
         "score": score,
         "detail": detail,
         "stats": stats,
@@ -235,7 +236,7 @@ def render_guard_hud_html(status_data):
     generated_at (optional). All dynamic text is HTML-escaped. No
     external URLs, no JavaScript required.
     """
-    version = html.escape(str(status_data.get("version", "1.1.1")))
+    version = html.escape(str(status_data.get("version", "1.1.2")))
     score = int(status_data.get("score", 0))
     detail = status_data.get("detail") or {}
     stats = status_data.get("stats") or {}

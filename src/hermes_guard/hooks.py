@@ -284,7 +284,8 @@ def handle_pre_tool_call(tool, args, session_id=None, config=None,
         if is_race:
             return _deny(["duplicate tool call inside the race window"])
         scan = detector.scan_tool_arguments(
-            serialized, session_tainted=trk.is_tainted(session_id))
+            serialized, session_tainted=trk.is_tainted(session_id),
+            tool=tool)
     except Exception as exc:
         storage.bump_stat("detector_error", 1, path_override=path_override)
         storage.record_degraded("tool_scan", path_override=path_override)
@@ -330,14 +331,52 @@ def _last_user_text(messages):
     return None
 
 
-def pre_llm_call_hook(messages=None, session_id="default", **kwargs):
+def _text_from_content_parts(content):
+    """Extract plain text from a content-parts list.
+
+    Parts look like {"type": "text", "text": "..."}; other part types
+    are ignored. A bare string passes through unchanged.
+    """
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, (list, tuple)):
+        return ""
+    texts = []
+    for part in content:
+        if isinstance(part, dict):
+            if isinstance(part.get("text"), str):
+                texts.append(part["text"])
+            elif isinstance(part.get("content"), str):
+                texts.append(part["content"])
+        elif isinstance(part, str):
+            texts.append(part)
+    return "\n".join(texts)
+
+
+def pre_llm_call_hook(user_message=None, conversation_history=None,
+                      session_id="default", **kwargs):
     """Hermes pre_llm_call hook.
 
-    Returns {"action": "block", "message": ...} to veto the turn,
+    Hermes calls this with user_message + conversation_history (see
+    agent/turn_context.py:_collect_pre_llm_call_context on 0.21.5).
+    Only user_message is scanned — earlier turns were already scanned
+    on arrival. user_message may be a plain string or a content-parts
+    list. Returns {"action": "block", "message": ...} to veto the turn,
     {"context": "..."} to inject a warning for FLAG tier, else None.
     """
     try:
-        text = _last_user_text(messages)
+        text = None
+        if user_message is not None:
+            if isinstance(user_message, (list, tuple)) and user_message \
+                    and all(isinstance(m, dict) and "role" in m
+                            for m in user_message):
+                # Legacy list-of-message-dicts shape (pre-v1.1.2 tests).
+                text = _last_user_text(user_message)
+            else:
+                text = _text_from_content_parts(user_message)
+        if text is None:
+            # Legacy fallback: a messages= kwarg (pre-v1.1.2 shape).
+            text = _last_user_text(kwargs.get("messages"))
         if text is None:
             return None
         out = handle_pre_llm_call(text, session_id=session_id)
@@ -377,15 +416,53 @@ def pre_tool_call_hook(tool_name="", args=None, session_id="default",
         return None
 
 
-def tool_guard_review(action, id=None, limit=20, **kwargs):
+def tool_guard_review(args, **kwargs):
     """guard_review tool handler (registered via register_tool).
 
-    Extra kwargs (including path_override) are ignored — the tool runs
-    against the plugin's own store only.
+    Hermes calls handlers as handler(args_dict, **kwargs), so the
+    first positional argument is the tool-call arguments object.
+    The model tool exposes only the five read-only actions; release
+    and delete are owner-only slash commands (see register()).
     """
-    import tools  # plugin-root module; lazy import avoids a cycle
+    from . import tools  # lazy import avoids a cycle at module load
 
-    return tools.guard_review(action, id=id, limit=limit)
+    if not isinstance(args, dict):
+        return {"error": "guard_review expects an arguments object"}
+    return tools.guard_review(
+        args.get("action"), id=args.get("id"),
+        limit=args.get("limit", 20))
+
+
+def _guard_release_command(raw_args):
+    """Slash-command handler: /guard-release <id> (owner-only)."""
+    from . import tools
+
+    entry_id = (raw_args or "").strip().split()
+    if not entry_id:
+        return "Usage: /guard-release <id>"
+    out = tools.release_entry(entry_id[0])
+    if "error" in out:
+        return "guard-release: %s" % out["error"]
+    return (
+        "Released entry %s (tier %s). Counts as a false positive for the "
+        "Posture Score. The entry's hidden-instruction pattern, if any, "
+        "is now suppressed — the same phrase alone will no longer "
+        "quarantine a message.\n\nOriginal text (re-send it manually if "
+        "you judge it safe):\n%s"
+        % (out["id"], out["tier"], out["original_text"]))
+
+
+def _guard_delete_command(raw_args):
+    """Slash-command handler: /guard-delete <id> (owner-only)."""
+    from . import tools
+
+    entry_id = (raw_args or "").strip().split()
+    if not entry_id:
+        return "Usage: /guard-delete <id>"
+    out = tools.delete_entry_cmd(entry_id[0])
+    if "error" in out:
+        return "guard-delete: %s" % out["error"]
+    return "Deleted quarantine entry %s." % out["id"]
 
 
 def register(ctx):
@@ -398,22 +475,47 @@ def register(ctx):
         ctx.register_hook("pre_tool_call", pre_tool_call_hook)
 
     if hasattr(ctx, "register_tool"):
-        try:
-            # Hermes >= 0.23: keyword-style registration.
-            ctx.register_tool(
-                name="guard_review",
-                description="Inspect the quarantine log, run the simulation "
-                            "arena, or render the Forensic X-Ray HUD.",
-                parameters=GUARD_REVIEW_SCHEMA,
-                handler=tool_guard_review,
-            )
-        except TypeError:
-            # Hermes <= 0.21.5: positional (name, toolset, schema,
-            # handler). Verified live on 0.21.5 (Phase 3); the >= 0.23
-            # keyword path is per the documented API, not live-verified.
-            ctx.register_tool(
-                "guard_review", "hermes_guard", GUARD_REVIEW_SCHEMA,
-                tool_guard_review,
-                description="Inspect the quarantine log, run the simulation "
-                            "arena, or render the Forensic X-Ray HUD.",
-            )
+        # One registration, both API generations: register_tool takes
+        # (name, toolset, schema, handler) on 0.21.5 and current. The
+        # schema carries name/description/parameters so the model sees
+        # the tool's parameters (a bare JSON Schema shows none).
+        ctx.register_tool(
+            name="guard_review",
+            toolset="hermes_guard",
+            schema={
+                "name": "guard_review",
+                "description": "Inspect the quarantine log, run the "
+                               "simulation arena, or render the Forensic "
+                               "X-Ray HUD.",
+                "parameters": GUARD_REVIEW_SCHEMA,
+            },
+            handler=tool_guard_review,
+        )
+
+    if hasattr(ctx, "register_command"):
+        # Owner-only commands: release/delete are NOT on the model
+        # tool, so injected text in a tool result cannot steer the
+        # model into weakening the guard. Only a human typing the
+        # slash command in session can release or delete an entry.
+        # The reviewer's other option — pre_tool_call returning
+        # {"action": "approve"} — DOES exist on 0.21.5 (plugins.py
+        # _dispatch_pre_tool_call_hooks -> request_tool_approval,
+        # fail-closed on gate error/deny). It was not chosen because
+        # it still leaves release/delete model-callable behind a
+        # per-attempt approval prompt (approval fatigue; one mistaken
+        # approval weakens the guard), while register_command removes
+        # the capability from the model entirely.
+        ctx.register_command(
+            "guard-release",
+            _guard_release_command,
+            description="Release one quarantine entry (owner-only): "
+                        "/guard-release <id>",
+            args_hint="<id>",
+        )
+        ctx.register_command(
+            "guard-delete",
+            _guard_delete_command,
+            description="Delete one quarantine entry (owner-only): "
+                        "/guard-delete <id>",
+            args_hint="<id>",
+        )

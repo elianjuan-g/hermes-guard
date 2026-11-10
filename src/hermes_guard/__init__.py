@@ -12,9 +12,11 @@ Public API (import from this package):
     Ledger                     -> ledger.Ledger (SHA-256 chain)
     TaintTracker               -> taint.TaintTracker
     register(ctx)              -> hooks.register (Hermes entry point)
-    guard_review(action, ...)  -> tools.guard_review (7 actions)
+    guard_review(action, ...)  -> tools.guard_review (5 model actions;
+                               release/delete are owner-only slash
+                               commands /guard-release, /guard-delete)
 
-Version: 1.1.1
+Version: 1.1.2
 License: MIT
 """
 
@@ -37,7 +39,7 @@ from .ledger import Ledger
 from .taint import TaintTracker
 from .hooks import register
 
-__version__ = "1.1.1"
+__version__ = "1.1.2"
 __all__ = [
     "scan_text",
     "scan_tool_arguments",

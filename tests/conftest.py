@@ -1,4 +1,5 @@
-"""pytest configuration: make the src-layout package and root tools.py importable."""
+"""pytest configuration: make the src-layout package importable, plus
+the plugin root (for the root __init__.py shim test)."""
 import os
 import sys
 

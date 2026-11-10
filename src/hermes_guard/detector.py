@@ -196,10 +196,25 @@ def special_token_match(text):
 # `rm -rf /tmp/x` (the known Manas Aegis RCE-pattern gap) slipped
 # through. In tool-argument context a bare `rm -rf` is an execution,
 # not a discussion, so it is blocked here.
+#
+# v1.1.2 (teknium1 review): the two subshell alternatives are BOUNDED
+# (`{1,512}`) — the old `\$\([^)]+\)` / `` `[^`]+` `` were quadratic on
+# unclosed runs (2 s on a 120 KB `write_file` body) — and SCOPED: they
+# apply only to command-running tools (see _COMMAND_TOOLS). Anything
+# else (write_file, read, note, ...) can legitimately contain backticks
+# / `$(...)` as content — Markdown and shell scripts — so those are
+# not blocked for it. The remaining alternatives (rm, pipe-to-shell,
+# /dev/tcp) apply to every tool call.
+_COMMAND_SUBSHELL_RE = re.compile(r"\$\([^)]{1,512}\)|`[^`\n]{1,512}`")
 _TOOL_RCE_RE = re.compile(
-    r"(?:\$\([^)]+\)|`[^`]+`|;\s*rm\s+-[rRfF]+|\|\s*(?:sh|bash|zsh)\b"
+    r"(?:;\s*rm\s+-[rRfF]+|\|\s*(?:sh|bash|zsh)\b"
     r"|>\s*/dev/tcp/|\brm\s+-[^\s]*[rfRF]\b)"
 )
+
+# Tools that execute commands. The reviewer named terminal and
+# execute_code; "shell" is kept because the plugin's own tests and
+# Phase-3 live verification used it as the command-tool name.
+_COMMAND_TOOLS = frozenset({"terminal", "execute_code", "shell"})
 
 # Sensitive credential paths. NOTE (Ciel fix, Round 3): Argon's
 # terminator class `(?:$|[/\\]|\s)` assumed bare-path input, but tool
@@ -212,20 +227,32 @@ _TOOL_SENSITIVE_PATH_RE = re.compile(
 )
 
 
-def rce_pattern_match(text):
-    """Return the first RCE/subshell pattern in *text*, or None."""
+def rce_pattern_match(text, tool=None):
+    """Return the first RCE/subshell pattern in *text*, or None.
+
+    The subshell alternatives (`$(...)`, backticks) apply only to
+    command-running tools. When *tool* is None (unknown caller) the
+    full pattern applies — fail-closed, so direct callers and the
+    simulation arena keep the old behaviour.
+    """
     if not isinstance(text, str):
         text = str(text or "")
+    if tool is None or tool in _COMMAND_TOOLS:
+        m = _COMMAND_SUBSHELL_RE.search(text)
+        if m:
+            return m.group(0)
     m = _TOOL_RCE_RE.search(text)
     return m.group(0) if m else None
 
 
-def scan_tool_arguments(args_text, session_tainted=False):
+def scan_tool_arguments(args_text, session_tainted=False, tool=None):
     """Scan tool-call arguments (pre_tool_call).
 
     Checks, in order: decoded hidden Unicode payloads, RCE/subshell
     patterns, sensitive credential paths, and (only when the session
     is tainted) hidden-instruction phrasing. Any hit blocks the call.
+    *tool* is the calling tool's name: the subshell check is scoped
+    to command-running tools (see rce_pattern_match).
 
     Returns {"tier": "block"|"pass", "score": int, "reasons": [str]}.
     """
@@ -234,7 +261,7 @@ def scan_tool_arguments(args_text, session_tainted=False):
     reasons = []
     if decode_tag(args_text) or decode_zerowidth(args_text):
         reasons.append("decoded hidden unicode payload in tool arguments")
-    rce = rce_pattern_match(args_text)
+    rce = rce_pattern_match(args_text, tool=tool)
     if rce:
         reasons.append(
             "dangerous command substitution / RCE pattern in tool "
